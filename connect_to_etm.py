@@ -53,65 +53,18 @@ def connect_to_etm():
     return ETM_API(session)
 
 
-def add_quantity_and_units(es):
-    # Energy System information can be used to globally define the quantity and units of this system,
-    # instead of defining them manually per KPI in each area: this fosters reuse (but is not necessary)
-    q_and_u = es.get_quantity_and_units()
-
-    # Add emission in mton as quantity and unit to the energy system information
-    if es.get_by_id('percent') is None:
-        unit = es.esdl.QuantityAndUnitType(id='percent', description='%')
-        q_and_u.quantityAndUnit.append(unit)
-
-    # Add emission in mton as quantity and unit to the energy system information
-    if es.get_by_id('cost') is None:
-        unit = es.esdl.QuantityAndUnitType(id='meur', physicalQuantity='COST', multiplier='MEGA', description='Meur')
-        q_and_u.quantityAndUnit.append(unit)
-
-
-def add_kpis(es):
-    # Create CO2-emissions KPI
-    kpi_co2 = es.esdl.DoubleKPI(
-        id=es.generate_uuid(),
-        name="KPI CO2-emissions",
-        value=0.0,
-        quantityAndUnit=es.get_by_id_slow('percent')
-    )
-
-    # Create costs KPI
-    kpi_costs = es.esdl.DoubleKPI(
-        id=es.generate_uuid(),
-        name="KPI Total costs",
-        value=0.0,
-        quantityAndUnit=es.get_by_id_slow('meur')
-    )
-
+def add_kpi(es, neighbourhood, heating_option):
     # Create heating option KPI
     kpi_heating = es.esdl.StringKPI(
         id=es.generate_uuid(),
-        name="KPI Heating option",
-        value='',
+        name='KPI Heating option {}'.format(neighbourhood),
+        value=heating_option,
     )
 
-    es.add_kpis()
-    es.add_kpi(kpi_co2)
-    es.add_kpi(kpi_costs)
+    if es.get_by_id('kpis') is None:
+        es.add_kpis()
+
     es.add_kpi(kpi_heating)
-
-
-def update_kpis(es, metrics):
-    # Update the energy system KPIs with the new values
-    # get_kpi_by_id() does not work yet in current version of ESDL, so do it by name
-    # co2_emission = get_kpi_by_id(es, 'co2emission')
-    co2_emission = es.get_kpi_by_name('KPI CO2-emissions')
-    co2_emission.value = metrics.loc['dashboard_co2_emissions_versus_start_year', 'future']
-    print('{} is now {} {}'.format(co2_emission.name, co2_emission.value,
-                                   co2_emission.quantityAndUnit.description))
-
-    total_costs = es.get_kpi_by_name('KPI Total costs')
-    total_costs.value = metrics.loc['dashboard_total_costs', 'future']
-    print('{} is now {} {}'.format(total_costs.name, total_costs.value,
-                                   total_costs.quantityAndUnit.description))
 
 
 def define_neighbourhood(code, name):
@@ -179,8 +132,6 @@ def main(args):
 
     # Add Energy System Information, quantity and units, and KPIs
     es.add_energy_system_information()
-    add_quantity_and_units(es)
-    add_kpis(es)
 
     # Get area of SearchAreaWind and determine number of wind turbines
     aggregated_building_list = es.get_assets_of_type(es.esdl.AggregatedBuilding)
@@ -200,38 +151,7 @@ def main(args):
     print('\n{}'.format(neighbourhood.TB_matrix_residences))
     print('\nPreferred heating technology: {}'.format(neighbourhood.preferential_technology))
 
-    # TODO: Move this to create ETM scenario method
-    # Connect to the ETM API for a specific scenario
-    # scenario_id = "1015160" # Keep using same ID, instead of creating many new ones
-    etm = connect_to_etm()
-    etm.create_new_scenario(area_name, "{}_{}".format(area_id,str.lower(area_name)), "2050")
-
-    print("\nETM scenario_id: {}".format(etm.scenario_id))
-
-    # Determine the metrics (KPIs and relevant slider queries)
-    gqueries = [
-        "dashboard_co2_emissions_versus_start_year",
-        "dashboard_total_costs"
-    ]
-
-    # Change the user values (slider settings) based on the energy system (from PICO)
-    user_values = {
-        # "households_number_of_apartments": str(number_of_apartments),
-        # "households_number_of_corner_houses": str(number_of_corner_houses),
-        # "households_number_of_detached_houses": str(number_of_detached_houses),
-        # "households_number_of_semi_detached_houses": str(number_of_semi_detached_houses),
-        # "households_number_of_terraced_houses": str(number_of_terraced_houses)
-    }
-
-    # Change the user inputs (i.e., set sliders)
-    etm.change_inputs(user_values, gqueries)
-
-    # Get and print the updated metrics
-    metrics = etm.current_metrics
-    print(metrics, "\n")
-
-    # Get the updated KPI values and update the ESDL KPIs in the energy system
-    update_kpis(es, metrics)
+    add_kpi(es, neighbourhood.code, neighbourhood.preferential_technology)
 
     # Print the energy system as string
     # When represented as a string we can easily send it via HTTP
