@@ -27,12 +27,6 @@ from energy_system_handler import EnergySystemHandler
 def request_pico_response(area):
     session = Session()
 
-    params = {
-        'bebouwingsafstand': 200,
-        'restrictie': [''],
-        'preverentie': ['']
-    }
-
     headers = {
         'accept': 'application/esdl+xml'
     }
@@ -135,8 +129,25 @@ def main(args):
 
     # Get area of SearchAreaWind and determine number of wind turbines
     aggregated_building_list = es.get_assets_of_type(es.esdl.AggregatedBuilding)
-    number_of_detached_houses = aggregated_building_list[0].aggregationCount
-    print('Number of detached houses: {}'.format(number_of_detached_houses))
+
+    # Initialise empty building stock object (dictionary)
+    building_stock = {}
+
+    # Check for all housing types
+    for asset in aggregated_building_list:
+        number_of_houses = asset.aggregationCount
+        residential_building_type = asset.residentialBuildingTypeDistribution.residentialBuildingTypePercentage[0].residentialBuildingType
+        # building_year_from = asset.buildingYearDistribution.fromToPerc[0].start
+        building_year_to = asset.buildingYearDistribution.fromToPerc[0].to
+
+        # Fill building stock
+        building_stock[residential_building_type] = number_of_houses
+        # building_stock[residential_building_type][building_year_to] = number_of_houses
+
+
+    print('\nResidential building type: {}'.format(residential_building_type))
+    print('Building year: ...-{}'.format(building_year_to))
+    print('Number of houses: {}'.format(number_of_houses))
 
     # Get area id and name
     area_id = es.es.instance[0].area.id
