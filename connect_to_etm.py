@@ -13,6 +13,8 @@ from pyecore.utils import DynamicEPackage
 from pyecore.resources.resource import HttpURI
 from xmlresource import XMLResource
 
+import webbrowser
+
 # ETM modules
 from ETM_API import ETM_API, SessionWithUrlBase
 
@@ -24,15 +26,14 @@ from helper_data import default_technology_matrix_residences
 from energy_system_handler import EnergySystemHandler
 
 
-def request_pico_response(area):
+def request_pico_response(area, params):
     session = Session()
 
     headers = {
         'accept': 'application/esdl+xml'
     }
 
-    # TODO: Include params in the GET request
-    response = session.get("https://pico.geodan.nl/pico/api/v1/{}/windturbinegebied".format(area), headers=headers, verify=True)
+    response = session.get("https://pico.geodan.nl/pico/api/v1/{}/gebouwvoorraad/woningtype".format(area), params=params, headers=headers, verify=True)
 
     file = open("pico.esdl", "w")
     file.write(response.text)
@@ -111,67 +112,148 @@ def assign_heating_technology(neighbourhood):
     neighbourhood.preferential_technology = neighbourhood.get_weighted_preferential_technology()
 
 
+def create_etm_scenario(area, id, normalized_heating_technology_mix):
+    # Connect to ETM API
+    etm = connect_to_etm()
+    # Create scenario
+    etm.create_new_scenario('Mondaine PoC #2', 'GM{}_{}'.format(id,area.lower()), 2050)
+
+    print('\nETM scenario_id: {}'.format(etm.scenario_id))
+
+    # Change the user values (slider settings) based on the energy system (from PICO)
+    user_values = {
+        'households_insulation_level_apartments': 30.,
+        'households_insulation_level_corner_houses': 30.,
+        'households_insulation_level_detached_houses': 30.,
+        'households_insulation_level_semi_detached_houses': 30.,
+        'households_insulation_level_terraced_houses': 30.,
+        'households_heater_combined_network_gas_share': 0.,
+        'households_heater_district_heating_steam_hot_water_share': normalized_heating_technology_mix['W'] * 100.,
+        'households_heater_heatpump_air_water_electricity_share': 0.7 * (normalized_heating_technology_mix['E'] + normalized_heating_technology_mix['E/LT']) * 100.,
+        'households_heater_heatpump_ground_water_electricity_share': 0.3 * (normalized_heating_technology_mix['E'] + normalized_heating_technology_mix['E/LT']) * 100.,
+        'households_heater_hybrid_heatpump_air_water_electricity_share': 0.24 * normalized_heating_technology_mix['H'] * 100.,
+        'households_heater_hybrid_hydrogen_heatpump_air_water_electricity_share': 0.76 * normalized_heating_technology_mix['H'] * 100.,
+        'households_heater_wood_pellets_share': 0.,
+        'households_heater_network_gas_share': 0.,
+        'households_heater_electricity_share': 0.,
+        'buildings_insulation_level': 52.,
+        'buildings_space_heater_network_gas_share': normalized_heating_technology_mix['H'] * 100.,
+        'buildings_space_heater_collective_heatpump_water_water_ts_electricity_share': (normalized_heating_technology_mix['E'] + normalized_heating_technology_mix['E/LT']) * 100.,
+        'buildings_space_heater_heatpump_air_water_network_gas_share': 0.,
+        'buildings_space_heater_electricity_share': 0.,
+        'buildings_space_heater_wood_pellets_share': 0.,
+        'buildings_space_heater_district_heating_steam_hot_water_share': normalized_heating_technology_mix['W'] * 100.
+    }
+
+    # Determine the metrics (KPIs and relevant slider queries)
+    gqueries = [
+        'dashboard_co2_emissions_versus_start_year',
+        'dashboard_total_costs'
+    ]
+
+    # Change the user inputs (i.e., set sliders)
+    etm.change_inputs(user_values, gqueries)
+
+    # Get and print the updated metrics
+    metrics = etm.current_metrics
+    print(metrics, '\n')
+
+    return etm
+
+
 def main(args):
-    # Get user input
+
+    """
+    PROCESS USER INPUT
+    """
+    # 1st argument represents the geographical level (e.g. "gemeente")
+    # 2nd argument represents the geo_id (e.g. "0164" for Hengelo)
     geo_level = args[0]
     geo_id = args[1]
 
+    """
+    PARSE ESDL BY PICO API
+    """
     # Request ESDL from PICO and store the response as 'pico.esdl'
-    request_pico_response("{}/{}".format(geo_level, geo_id))
+    params = {}
+    request_pico_response("{}/{}".format(geo_level, geo_id), params)
 
     # Load the energy system by its name
     # name = 'pico.esdl'
-    name = 'example.esdl'
-    es = EnergySystemHandler(name)
+    name = 'example_input.esdl'
+    esh = EnergySystemHandler(name)
 
     # Add Energy System Information, quantity and units, and KPIs
-    es.add_energy_system_information()
+    esh.add_energy_system_information()
 
-    # Get area of SearchAreaWind and determine number of wind turbines
-    aggregated_building_list = es.get_assets_of_type(es.esdl.AggregatedBuilding)
+    # Initialise heating technology mix
+    heating_technology_mix = {
+        'E': 0.,    # all-electric
+        'E/LT': 0., # all-electric combined with LT
+        'H': 0.,    # hybrid
+        'W': 0.     # district heating
+    }
 
-    # Initialise empty building stock object (dictionary)
-    building_stock = {}
+    # Get id and name for top area
+    area = esh.es.instance[0].area
+    print('\nArea ID: {}'.format(area.id))
+    print('Area name: {}'.format(area.name))
 
-    # Check for all housing types
-    for asset in aggregated_building_list:
-        number_of_houses = asset.aggregationCount
-        residential_building_type = asset.residentialBuildingTypeDistribution.residentialBuildingTypePercentage[0].residentialBuildingType
-        # building_year_from = asset.buildingYearDistribution.fromToPerc[0].start
-        building_year_to = asset.buildingYearDistribution.fromToPerc[0].to
-
-        # Fill building stock
-        building_stock[residential_building_type] = number_of_houses
-        # building_stock[residential_building_type][building_year_to] = number_of_houses
-
-
-    print('\nResidential building type: {}'.format(residential_building_type))
-    print('Building year: ...-{}'.format(building_year_to))
-    print('Number of houses: {}'.format(number_of_houses))
-
-    # Get area id and name
-    area_id = es.es.instance[0].area.id
-    area_name = es.es.instance[0].area.name
-    print('\nArea ID: {}'.format(area_id))
-    print('Area name: {}'.format(area_name))
-
-    # Assign heating technology
-    neighbourhood = define_neighbourhood(area_id, area_name)
+    # Define neighbourhood and assign heating technology
+    neighbourhood = define_neighbourhood(area.id, area.name)
     assign_heating_technology(neighbourhood)
 
-    print('\n{}'.format(neighbourhood.TB_matrix_residences))
-    print('\nPreferred heating technology: {}'.format(neighbourhood.preferential_technology))
+    # Update heating technology mix
+    heating_technology = neighbourhood.preferential_technology
+    heating_technology_mix[heating_technology] += neighbourhood.number_of_houses()
 
-    add_kpi(es, neighbourhood.code, neighbourhood.preferential_technology)
+    # Iterate over sub areas in top area
+    for sub_area in area.area:
+        # Get id and name for sub areas
+        print('\nSub-area ID: {}'.format(sub_area.id))
+        print('\nSub-area name: {}'.format(sub_area.name))
+
+        # Define neighbourhood and assign heating technology
+        neighbourhood = define_neighbourhood(sub_area.id, sub_area.name)
+        assign_heating_technology(neighbourhood)
+
+        # Update heating technology mix
+        heating_technology = neighbourhood.preferential_technology
+        heating_technology_mix[heating_technology] += neighbourhood.number_of_houses()
+
+    # Normalize heating technology mix
+    normalized_heating_technology_mix = {}
+    sum_of_values = sum(heating_technology_mix.values())
+    for technology, value in heating_technology_mix.items():
+        normalized_heating_technology_mix[technology] = value / sum_of_values
+
+    print(normalized_heating_technology_mix)
+
+    """
+    ENRICH ESDL FOR AGGREGATED ENERGY SYSTEM (TOP AREA)
+    """
+
+    # Add KPIs to existing ESDL
+    add_kpi(esh, neighbourhood.code, neighbourhood.preferential_technology)
 
     # Print the energy system as string
     # When represented as a string we can easily send it via HTTP
-    energySystem = es.get_as_string()
+    energySystem = esh.get_as_string()
     print("\n\nHere comes the first 9 lines of the energy system as as a string value:\n")
     print(energySystem[:500])
 
     # Save it to a file
-    es.save('pico.esdl')
+    esh.save('example_output.esdl')
+
+    """
+    GENERATE AND LAUNCH ETM SCENARIO
+    """
+
+    # Create ETM scenario
+    etm = create_etm_scenario(area.name, area.id, normalized_heating_technology_mix)
+
+    # Open ETM scenario
+    webbrowser.open_new('https://beta-pro.energytransitionmodel.com/scenarios/{}'.format(etm.scenario_id))
 
 
 if __name__ == '__main__':
